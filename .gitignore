@@ -1,1 +1,4 @@
 .vs/*
+# Exclude build and assembly directories
+bin/
+obj/
