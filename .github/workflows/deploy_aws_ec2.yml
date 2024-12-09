@@ -1,0 +1,84 @@
+name: CI/CD for HolaMundoC EC2
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-and-publish:
+    name: Build and Publish Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout del código fuente
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # 2. Obtener la versión más alta desde Docker Hub
+      - name: Determine Next Version on DockerHub
+        id: get_version
+        run: |
+          REPO=${{ secrets.DOCKER_USERNAME }}/holamundoc
+
+          # Obtener tags y extraer versiones
+          tags=$(curl -s "https://hub.docker.com/v2/repositories/$REPO/tags/" | jq -r '.results[].name' | grep -oP '^v\d+\.\d+' | sort -V)
+
+          # Determinar la nueva versión
+          if [ -z "$tags" ]; then
+            NEW_VERSION="v1.0"
+          else
+            highest_version=$(echo "$tags" | tail -n 1)
+            NEW_VERSION=$(echo "$highest_version" | awk -F. '{print "v" $1 "." $2+1}')
+          fi
+
+          echo "next=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      # 3. Log in a DockerHub
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 4. Construir y subir la imagen Docker a DockerHub
+      - name: Build and Publish Docker Image
+        run: |
+          REPO=${{ secrets.DOCKER_USERNAME }}/holamundoc
+          NEW_VERSION=${{ steps.get_version.outputs.next }}
+
+          docker build . --file Dockerfile \
+            --tag $REPO:$NEW_VERSION \
+            --tag $REPO:latest
+          docker push $REPO:$NEW_VERSION
+          docker push $REPO:latest
+
+  deploy-to-ec2:
+    name: Deploy Application to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-publish
+
+    steps:
+      # 1. Desplegar en EC2
+      - name: Deploy Application on EC2
+        uses: appleboy/ssh-action@v0.1.9
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            sudo yum update -y
+            sudo yum install -y docker
+            sudo service docker start
+
+            # Pull última versión de Docker Hub
+            sudo docker pull ${{ secrets.DOCKER_USERNAME }}/holamundoc:latest
+
+            # Detener y eliminar cualquier contenedor en ejecución con el mismo nombre
+            sudo docker ps -q --filter "name=holamundoc" | xargs -r docker stop
+            sudo docker ps -aq --filter "name=holamundoc" | xargs -r docker rm
+
+            # Correr la nueva versión
+            sudo docker run -d --name holamundoc -p 80:8080 ${{ secrets.DOCKER_USERNAME }}/holamundoc:latest
