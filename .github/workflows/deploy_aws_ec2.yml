@@ -77,8 +77,8 @@ jobs:
             sudo docker pull ${{ secrets.DOCKER_USERNAME }}/holamundoc:latest
 
             # Detener y eliminar cualquier contenedor en ejecución con el mismo nombre
-            sudo docker ps -q --filter "name=holamundoc" | xargs -r docker stop
-            sudo docker ps -aq --filter "name=holamundoc" | xargs -r docker rm
+            sudo docker ps -q --filter "name=holamundoc" | xargs -r sudo docker stop
+            sudo docker ps -aq --filter "name=holamundoc" | xargs -r sudo docker rm
 
             # Correr la nueva versión
             sudo docker run -d --name holamundoc -p 80:8080 ${{ secrets.DOCKER_USERNAME }}/holamundoc:latest
