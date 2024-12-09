@@ -1,0 +1,89 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  
+  build_and_push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest  
+
+    steps:
+     
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Determine next version tag
+        id: version
+        run: |
+          # Obtener los tags existentes de la imagen en Docker Hub
+          REPO="millanda29/holamundoc"  # El nombre del repositorio de Docker Hub para este proyecto
+          response=$(curl -s https://hub.docker.com/v2/repositories/$REPO/tags/)
+          tags=$(echo "$response" | jq -r '.results[] | select(.name | test("^v[0-9]+\\.[0-9]+$")) | .name' | sed 's/^v//')
+
+          # Si no hay tags, empezar desde v1.0
+          if [ -z "$tags" ]; then
+            NEW_VERSION="v1.0"
+          else
+            highest_version=$(echo "$tags" | sort -V | tail -n 1)
+            MAJOR=$(echo "$highest_version" | cut -d. -f1)
+            MINOR=$(echo "$highest_version" | cut -d. -f2)
+            NEW_MINOR=$((MINOR + 1))  # Incrementar la versión menor
+            NEW_VERSION="v${MAJOR}.${NEW_MINOR}"
+          fi
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_ENV
+          
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: . 
+          file: ./Dockerfile 
+          push: true 
+          tags: |
+            millanda29/holamundoc:${{ env.new_version }}  # Usamos el tag con la nueva versión
+            millanda29/holamundoc:latest  # También subimos la imagen con el tag 'latest'
+
+  deploy:
+    name: Deploy Docker Image on EC2
+    runs-on: self-hosted 
+    needs: build_and_push
+
+    steps:
+      - name: Install Docker on EC2 (Amazon Linux 2023)
+        run: |
+          # Actualizar el sistema
+          sudo yum update -y
+          
+          # Instalar dependencias para Docker
+          sudo yum install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+          # Agregar el repositorio oficial de Docker
+          sudo install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          echo \
+            "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          
+          # Instalar Docker
+          sudo yum install -y docker-ce docker-ce-cli containerd.io
+          # Iniciar y habilitar Docker
+          sudo systemctl start docker
+          sudo systemctl enable docker
+
+      - name: Run Docker container
+        run: |
+          docker run -d --name holamundoc -p 80:8080 millanda29/holamundoc:${{ env.new_version }}
